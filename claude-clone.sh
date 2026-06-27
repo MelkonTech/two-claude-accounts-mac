@@ -89,18 +89,37 @@ if [[ -n "$ICON" ]]; then
   echo "Icon set from $ICON"
 fi
 
-# --- 4. Re-sign ad-hoc (editing the bundle invalidated the signature) -------
+# --- 4. Wrap the executable so normal launches use the isolated data dir -----
+EXECUTABLE_NAME="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$PLIST")"
+EXECUTABLE="$TARGET_APP/Contents/MacOS/$EXECUTABLE_NAME"
+REAL_EXECUTABLE="$TARGET_APP/Contents/MacOS/${EXECUTABLE_NAME}.real"
+[[ -x "$EXECUTABLE" ]] || die "app executable not found: $EXECUTABLE"
+
+echo "Installing launch wrapper: --user-data-dir=$DATA_DIR"
+mv "$EXECUTABLE" "$REAL_EXECUTABLE"
+DATA_DIR_ESCAPED="$(printf '%q' "$DATA_DIR")"
+cat > "$EXECUTABLE" <<EOF
+#!/bin/zsh
+APP_DIR="\$(cd "\$(dirname "\$0")" && pwd)"
+exec "\$APP_DIR/${EXECUTABLE_NAME}.real" --user-data-dir=$DATA_DIR_ESCAPED "\$@"
+EOF
+chmod +x "$EXECUTABLE"
+
+# --- 5. Re-sign ad-hoc (editing the bundle invalidated the signature) -------
 echo "Re-signing (ad-hoc)"
 codesign --force --deep --sign - "$TARGET_APP"
 
-# --- 5. Refresh icon + Launch Services caches -------------------------------
+# --- 6. Refresh icon + Launch Services caches -------------------------------
 /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$TARGET_APP" || true
 killall Dock Finder 2>/dev/null || true
 
-# --- 6. Launch it at its own data directory ---------------------------------
+# --- 7. Open it like a normal app -------------------------------------------
 echo ""
-echo "Done. Launch your second Claude with:"
-echo "  open -n -a \"$NAME\" --args --user-data-dir=\"$DATA_DIR\""
+echo "Done. Open your second Claude like a normal Mac app:"
+echo "  open \"$TARGET_APP\""
+echo ""
+echo "The app wrapper always launches it with:"
+echo "  --user-data-dir=\"$DATA_DIR\""
 echo ""
 echo "Tip: if a fresh login lands in the wrong window, fully quit the other"
 echo "Claude (Cmd+Q) while you sign in. Re-run with --update after each Claude update."
