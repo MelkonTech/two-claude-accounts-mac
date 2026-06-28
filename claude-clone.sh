@@ -195,9 +195,33 @@ if [[ $NO_WRAP -eq 0 ]]; then
 fi
 
 # ── 5. Re-sign ad-hoc (must run after ALL bundle edits, including wrapper) ───
-info "Re-signing ad-hoc"
-codesign --force --deep --sign - "$TARGET_APP"
-ok "Signed"
+# Sign INSIDE-OUT, deepest nested code first, the outer .app last. Apple has
+# deprecated `codesign --deep` for signing — it silently mis-orders or skips
+# nested helpers, leaving Anthropic's Developer-ID + hardened-runtime signature
+# on a helper under an ad-hoc parent. That mismatch is what produces the
+# "broken code signature / unable to find helper app (Electron FATAL)" crash.
+# Signing each component explicitly, innermost first, avoids it entirely.
+info "Re-signing ad-hoc (inside-out)"
+# 5a. nested frameworks
+while IFS= read -r -d '' fw; do
+  codesign --force --sign - "$fw" 2>/dev/null || true
+done < <(find "$TARGET_APP/Contents/Frameworks" -name "*.framework" -type d -print0 2>/dev/null)
+# 5b. nested helper .app bundles (Claude Helper.app, (GPU), (Renderer), (Plugin))
+while IFS= read -r -d '' h; do
+  codesign --force --sign - "$h" 2>/dev/null || true
+done < <(find "$TARGET_APP/Contents/Frameworks" -name "*.app" -type d -print0 2>/dev/null)
+# 5c. loose Mach-O helpers and the renamed real launcher binary
+for extra in "$TARGET_APP/Contents/Helpers/"* "$REAL_PATH"; do
+  [[ -f "$extra" ]] && codesign --force --sign - "$extra" 2>/dev/null || true
+done
+# 5d. the outer app bundle LAST, so its seal covers the freshly signed insides
+codesign --force --sign - "$TARGET_APP"
+# 5e. fail loudly if the result still won't verify (catches future bundle changes)
+if ! codesign --verify --deep --strict "$TARGET_APP" 2>/dev/null; then
+  die "re-sign failed strict verification — the app would crash on launch. \
+Quit any running copy of \"$NAME\" and re-run."
+fi
+ok "Signed (inside-out) and verified"
 
 # ── 6. Refresh caches ─────────────────────────────────────────────────────────
 info "Refreshing Launch Services and icon caches"
